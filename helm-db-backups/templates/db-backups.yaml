@@ -246,9 +246,15 @@ spec:
                     ;;
                   minio)
                     mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
-                    echo -n "" > /tmp/.keep
-                    mc cp /tmp/.keep myminio/${MINIO_BUCKET}/${S3_PATH}.keep
-                    rm -f /tmp/.keep
+                    if [ -n "${S3_PATH}" ]; then
+                      # Check if the path exists by listing it
+                      if ! mc ls myminio/${MINIO_BUCKET}/${S3_PATH} >/dev/null 2>&1; then
+                        echo "Creating MinIO folder: myminio/${MINIO_BUCKET}/${S3_PATH}"
+                        echo -n "" > /tmp/.keep
+                        mc cp /tmp/.keep myminio/${MINIO_BUCKET}/${S3_PATH}.keep
+                        rm -f /tmp/.keep
+                      fi
+                    fi
                     ;;
                   azure)
                     if ! az storage blob list --container-name "${AZURE_CONTAINER}" --prefix "${AZURE_PATH}" --query "[?name=='${AZURE_PATH}'].name" -o tsv | grep -q "${AZURE_PATH}"; then
