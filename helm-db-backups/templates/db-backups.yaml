@@ -216,7 +216,7 @@ spec:
                     ;;
                   minio)
                     mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
-                    mc find myminio/${MINIO_BUCKET}/${S3_PATH} --older-than ${BACKUP_RETENTION_DAYS}d --exec "mc rm {}"
+                    mc find myminio/${MINIO_BUCKET}/${S3_PATH} --older-than ${BACKUP_RETENTION_DAYS} --exec "mc rm {}"
                     ;;
                   azure)
                     export AZURE_STORAGE_ACCOUNT
