@@ -31,7 +31,7 @@ aws:
   secretAccessKey: "<AWS_SECRET_ACCESS_KEY>"
   region: "<AWS_REGION>"
   bucket: "<S3_BUCKET>"
-  path: "<S3_PATH>"
+  path: ""
 
 # MinIO configuration
 minio:
