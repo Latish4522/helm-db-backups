@@ -1,0 +1,402 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-backup-config
+  namespace: {{ .Values.namespace }}
+data:
+  DB_HOST: "{{ .Values.db.host }}"
+  DB_NAME: "{{ .Values.db.name }}"
+  DB_TYPE: "{{ .Values.db.type }}"
+  BACKUP_RETENTION_DAYS: "{{ .Values.backup.retentionDays }}"
+  OUTPUT_PROVIDER: "{{ .Values.outputProvider }}"
+  S3_BUCKET: "{{ .Values.aws.bucket }}"
+  S3_PATH: "{{ .Values.aws.path }}"
+  AZURE_CONTAINER: "{{ .Values.azure.container }}"
+  AZURE_PATH: "{{ .Values.azure.path }}"
+  MINIO_ENDPOINT: "{{ .Values.minio.endpoint }}"
+  MINIO_BUCKET: "{{ .Values.minio.bucket }}"
+  TEAMS_WEBHOOK_NAME: "{{ .Values.notification.teamsWebhookName }}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-backup-secrets
+  namespace: {{ .Values.namespace }}
+type: Opaque
+stringData:
+  DB_USERNAME: "{{ .Values.db.username }}"
+  DB_PASSWORD: "{{ .Values.db.password }}"
+  AWS_ACCESS_KEY_ID: "{{ .Values.aws.accessKeyId }}"
+  AWS_SECRET_ACCESS_KEY: "{{ .Values.aws.secretAccessKey }}"
+  AWS_REGION: "{{ .Values.aws.region }}"
+  AZURE_STORAGE_ACCOUNT: "{{ .Values.azure.storageAccount }}"
+  AZURE_STORAGE_KEY: "{{ .Values.azure.storageKey }}"
+  MINIO_ACCESS_KEY: "{{ .Values.minio.accessKey }}"
+  MINIO_SECRET_KEY: "{{ .Values.minio.secretKey }}"
+  TEAMS_WEBHOOK_URL: "{{ .Values.notification.teamsWebhookUrl }}"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup-job
+  namespace: {{ .Values.namespace }}
+spec:
+  schedule: "{{ .Values.backup.schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: db-backup
+            image: ubuntu:22.04
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/bash
+            - -c
+            - |
+              #!/bin/bash
+              set -e
+              # Install required tools
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update && apt-get install -y \
+                curl ca-certificates gnupg2 lsb-release unzip \
+                wget jq python3 python3-pip tzdata
+              wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+              sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+              apt-get update
+              apt-get install -y postgresql-client-16
+              wget https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
+              apt-get install -y ./mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
+              case "${OUTPUT_PROVIDER}" in
+                aws)
+                  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                  unzip awscliv2.zip
+                  ./aws/install
+                  export PATH=$PATH:/usr/local/bin
+                  ;;
+                minio)
+                  wget https://dl.min.io/client/mc/release/linux-amd64/mc
+                  chmod +x mc
+                  mv mc /usr/local/bin/
+                  ;;
+                azure)
+                  curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+                  python3 -m pip install azure-storage-blob
+                  ;;
+                *)
+                  echo "Unsupported output provider: ${OUTPUT_PROVIDER}"
+                  exit 1
+                  ;;
+              esac
+              TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+              BACKUP_FILE="/tmp/backup-${TIMESTAMP}"
+              send_notification() {
+                local status=$1
+                local message=$2
+                local color
+                if [ "$status" = "success" ]; then
+                  color="00FF00"
+                else
+                  color="FF0000"
+                fi
+                curl -H "Content-Type: application/json" -d "{\"@type\": \"MessageCard\",\"@context\": \"http://schema.org/extensions\",\"themeColor\": \"$color\",\"summary\": \"DB Backup $status\",\"sections\": [{\"activityTitle\": \"${TEAMS_WEBHOOK_NAME}\",\"activitySubtitle\": \"Status: $status\",\"text\": \"$message\"}]}" ${TEAMS_WEBHOOK_URL}
+              }
+              perform_backup() {
+                echo "Starting database backup..."
+                case "${DB_TYPE}" in
+                  psql)
+                    PGPASSWORD=${DB_PASSWORD} pg_dumpall -h ${DB_HOST} -U ${DB_USERNAME} -f "${BACKUP_FILE}.sql"
+                    ;;
+                  mysql)
+                    export MYSQL_PWD="${DB_PASSWORD}"
+                    mysqldump -h ${DB_HOST} -u ${DB_USERNAME} -P 3306 --column-statistics=0 ${DB_NAME} > "${BACKUP_FILE}.sql"
+                    ;;
+                  mongo)
+                    mongodump --host=${DB_HOST} --username=${DB_USERNAME} --password=${DB_PASSWORD} --port=27017 --authenticationDatabase=${DB_NAME} --out=${BACKUP_FILE}
+                    tar -czf "${BACKUP_FILE}.tar.gz" -C /tmp "backup-${TIMESTAMP}"
+                    ;;
+                  *)
+                    echo "Unsupported database type: ${DB_TYPE}"
+                    return 1
+                    ;;
+                esac
+                if [ $? -eq 0 ]; then
+                  echo "Database backup completed successfully"
+                  return 0
+                else
+                  echo "Database backup failed"
+                  return 1
+                fi
+              }
+              upload_backup() {
+                echo "Uploading backup to ${OUTPUT_PROVIDER}..."
+                case "${OUTPUT_PROVIDER}" in
+                  aws)
+                    export AWS_ACCESS_KEY_ID
+                    export AWS_SECRET_ACCESS_KEY
+                    export AWS_DEFAULT_REGION=${AWS_REGION}
+                    export AWS_S3_MULTIPART_THRESHOLD=10GB
+                    if [ "${DB_TYPE}" = "psql" ]; then
+                      BACKUP_EXT="sql"
+                    elif [ "${DB_TYPE}" = "mysql" ]; then
+                      BACKUP_EXT="sql"
+                    elif [ "${DB_TYPE}" = "mongo" ]; then
+                      BACKUP_EXT="tar.gz"
+                    else
+                      BACKUP_EXT="backup"
+                    fi
+                    aws s3 cp "${BACKUP_FILE}.${BACKUP_EXT}" "s3://${S3_BUCKET}/${S3_PATH}${DB_NAME}-${TIMESTAMP}.${BACKUP_EXT}"
+                    ;;
+                  minio)
+                    if [ "${DB_TYPE}" = "psql" ]; then
+                      BACKUP_EXT="sql"
+                    elif [ "${DB_TYPE}" = "mysql" ]; then
+                      BACKUP_EXT="sql"
+                    elif [ "${DB_TYPE}" = "mongo" ]; then
+                      BACKUP_EXT="tar.gz"
+                    else
+                      BACKUP_EXT="backup"
+                    fi
+                    mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+                    mc cp "${BACKUP_FILE}.${BACKUP_EXT}" myminio/${MINIO_BUCKET}/${S3_PATH}${DB_NAME}-${TIMESTAMP}.${BACKUP_EXT}
+                    ;;
+                  azure)
+                    export AZURE_STORAGE_ACCOUNT
+                    export AZURE_STORAGE_KEY
+                    if [ "${DB_TYPE}" = "psql" ]; then
+                      BACKUP_EXT="sql"
+                    elif [ "${DB_TYPE}" = "mysql" ]; then
+                      BACKUP_EXT="sql"
+                    elif [ "${DB_TYPE}" = "mongo" ]; then
+                      BACKUP_EXT="tar.gz"
+                    else
+                      BACKUP_EXT="backup"
+                    fi
+                    az storage blob upload \
+                      --container-name "${AZURE_CONTAINER}" \
+                      --file "${BACKUP_FILE}.${BACKUP_EXT}" \
+                      --name "${AZURE_PATH}${DB_NAME}-${TIMESTAMP}.${BACKUP_EXT}"
+                    ;;
+                  *)
+                    echo "Unsupported output provider: ${OUTPUT_PROVIDER}"
+                    return 1
+                    ;;
+                esac
+                if [ $? -eq 0 ]; then
+                  echo "Backup upload completed successfully"
+                  return 0
+                else
+                  echo "Backup upload failed"
+                  return 1
+                fi
+              }
+              delete_old_backups() {
+                echo "Deleting backups older than ${BACKUP_RETENTION_DAYS} days from ${OUTPUT_PROVIDER}..."
+                case "${OUTPUT_PROVIDER}" in
+                  aws)
+                    export AWS_ACCESS_KEY_ID
+                    export AWS_SECRET_ACCESS_KEY
+                    export AWS_DEFAULT_REGION=${AWS_REGION}
+                    aws s3 ls "s3://${S3_BUCKET}/${S3_PATH}" | while read -r line; do
+                      file_date=$(echo $line | awk '{print $1" "$2}')
+                      file_name=$(echo $line | awk '{print $4}')
+                      if [ -n "$file_name" ]; then
+                        file_epoch=$(date -d "$file_date" +%s)
+                        cutoff_epoch=$(date -d "${BACKUP_RETENTION_DAYS} days ago" +%s)
+                        if [ $file_epoch -lt $cutoff_epoch ]; then
+                          echo "Deleting s3://${S3_BUCKET}/${S3_PATH}${file_name}"
+                          aws s3 rm "s3://${S3_BUCKET}/${S3_PATH}${file_name}"
+                        fi
+                      fi
+                    done
+                    ;;
+                  minio)
+                    mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+                    mc find myminio/${MINIO_BUCKET}/${S3_PATH} --older-than ${BACKUP_RETENTION_DAYS}d --exec "mc rm {}"
+                    ;;
+                  azure)
+                    export AZURE_STORAGE_ACCOUNT
+                    export AZURE_STORAGE_KEY
+                    az storage blob list --container-name "${AZURE_CONTAINER}" --prefix "${AZURE_PATH}" --query "[].{name:name, last_modified:lastModified}" -o tsv | while read -r blob_name blob_date; do
+                      blob_epoch=$(date -d "$blob_date" +%s)
+                      cutoff_epoch=$(date -d "${BACKUP_RETENTION_DAYS} days ago" +%s)
+                      if [ $blob_epoch -lt $cutoff_epoch ]; then
+                        echo "Deleting blob ${blob_name} from Azure"
+                        az storage blob delete --container-name "${AZURE_CONTAINER}" --name "$blob_name"
+                      fi
+                    done
+                    ;;
+                  *)
+                    echo "Retention not supported for provider: ${OUTPUT_PROVIDER}"
+                    ;;
+                esac
+              }
+              ensure_backup_folder() {
+                echo "Ensuring backup folder exists in ${OUTPUT_PROVIDER}..."
+                case "${OUTPUT_PROVIDER}" in
+                  aws)
+                    if ! aws s3 ls "s3://${S3_BUCKET}/${S3_PATH}" | grep -q PRE; then
+                      echo "Creating S3 folder: s3://${S3_BUCKET}/${S3_PATH}"
+                      aws s3 cp /dev/null "s3://${S3_BUCKET}/${S3_PATH}"
+                    fi
+                    ;;
+                  minio)
+                    mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+                    echo -n "" > /tmp/.keep
+                    mc cp /tmp/.keep myminio/${MINIO_BUCKET}/${S3_PATH}.keep
+                    rm -f /tmp/.keep
+                    ;;
+                  azure)
+                    if ! az storage blob list --container-name "${AZURE_CONTAINER}" --prefix "${AZURE_PATH}" --query "[?name=='${AZURE_PATH}'].name" -o tsv | grep -q "${AZURE_PATH}"; then
+                      echo "Creating Azure folder: ${AZURE_PATH}"
+                      echo -n "" > /tmp/emptyfile
+                      az storage blob upload --container-name "${AZURE_CONTAINER}" --file /tmp/emptyfile --name "${AZURE_PATH}"
+                      rm -f /tmp/emptyfile
+                    fi
+                    ;;
+                  *)
+                    echo "Provider ${OUTPUT_PROVIDER} does not support folder creation check."
+                    ;;
+                esac
+              }
+              ensure_backup_folder
+              delete_old_backups
+              if perform_backup; then
+                send_notification "success" "Database backup for ${DB_NAME} completed successfully at $(date)"
+                if upload_backup; then
+                  send_notification "success" "Backup for ${DB_NAME} uploaded to ${OUTPUT_PROVIDER} successfully at $(date)"
+                else
+                  send_notification "failure" "Failed to upload backup for ${DB_NAME} to ${OUTPUT_PROVIDER} at $(date)"
+                  exit 1
+                fi
+              else
+                send_notification "failure" "Database backup for ${DB_NAME} failed at $(date)"
+                exit 1
+              fi
+              rm -rf "${BACKUP_FILE}"*
+              echo "Backup process completed"
+            env:
+            - name: TZ
+              value: "UTC"
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: DB_HOST
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: DB_NAME
+            - name: DB_TYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: DB_TYPE
+            - name: OUTPUT_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: OUTPUT_PROVIDER
+            - name: S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: S3_BUCKET
+            - name: S3_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: S3_PATH
+            - name: AZURE_CONTAINER
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: AZURE_CONTAINER
+            - name: AZURE_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: AZURE_PATH
+            - name: TEAMS_WEBHOOK_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: TEAMS_WEBHOOK_NAME
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: DB_PASSWORD
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: AWS_REGION
+            - name: AZURE_STORAGE_ACCOUNT
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: AZURE_STORAGE_ACCOUNT
+            - name: AZURE_STORAGE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: AZURE_STORAGE_KEY
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: MINIO_ENDPOINT
+            - name: MINIO_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: db-backup-config
+                  key: MINIO_BUCKET
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: MINIO_SECRET_KEY
+            - name: TEAMS_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-backup-secrets
+                  key: TEAMS_WEBHOOK_URL
+            resources:
+              requests:
+                memory: {{ .Values.resources.requests.memory | quote }}
+                cpu: {{ .Values.resources.requests.cpu | quote }}
+              limits:
+                memory: {{ .Values.resources.limits.memory | quote }}
+                cpu: {{ .Values.resources.limits.cpu | quote }}
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /tmp
+          volumes:
+          - name: backup-storage
+            emptyDir: {}

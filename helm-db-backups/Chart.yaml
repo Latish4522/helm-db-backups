@@ -1,0 +1,4 @@
+apiVersion: v2
+name: db-backups
+version: 0.1.0
+description: A Helm chart for database backup CronJob with cloud storage and Teams notification
