@@ -60,6 +60,7 @@ spec:
             - |
               #!/bin/bash
               set -e
+              set -o pipefail
               # Install common tools
               export DEBIAN_FRONTEND=noninteractive
               apt-get update && apt-get install -y \
@@ -96,11 +97,13 @@ spec:
                   export PATH=$PATH:/usr/local/bin
                   ;;
                 minio)
-                  wget https://dl.min.io/client/mc/release/linux-amd64/mc
-                  chmod +x mc
-                  mv mc /usr/local/bin/
+                  echo "Downloading MinIO client (mc)..."
+                  wget -O /tmp/mc https://dl.min.io/client/mc/release/linux-amd64/mc || { echo "wget failed"; exit 1; }
+                  chmod +x /tmp/mc || { echo "chmod failed"; exit 1; }
+                  mv /tmp/mc /usr/local/bin/mc || { echo "mv failed"; exit 1; }
                   export PATH=$PATH:/usr/local/bin
                   which mc || { echo "mc not found after install"; exit 1; }
+                  mc --version || { echo "mc not working"; exit 1; }
                   ;;
                 azure)
                   curl -sL https://aka.ms/InstallAzureCLIDeb | bash
