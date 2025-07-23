@@ -274,11 +274,11 @@ spec:
                 esac
               }
               # Main execution
-              ensure_backup_folder
               if perform_backup; then
                 send_notification "success" "Database backup for ${DB_NAME} completed successfully at $(date)"
                 if upload_backup; then
                   send_notification "success" "Backup for ${DB_NAME} uploaded to ${OUTPUT_PROVIDER} successfully at $(date)"
+                  ensure_backup_folder
                   delete_old_backups
                 else
                   send_notification "failure" "Failed to upload backup for ${DB_NAME} to ${OUTPUT_PROVIDER} at $(date)"
