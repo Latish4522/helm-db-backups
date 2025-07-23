@@ -58,40 +58,28 @@ spec:
             - /bin/bash
             - -c
             - |
-              #!/bin/bash
               set -e
-              # Install required tools
               export DEBIAN_FRONTEND=noninteractive
               apt-get update && apt-get install -y \
-                curl ca-certificates gnupg2 lsb-release unzip \
-                wget jq python3 python3-pip tzdata
+                curl ca-certificates gnupg2 lsb-release unzip wget jq python3 python3-pip tzdata \
+                postgresql-client-16 mysql-client
               wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
               sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
               apt-get update
               apt-get install -y postgresql-client-16
               wget https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
               apt-get install -y ./mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
-              case "${OUTPUT_PROVIDER}" in
-                aws)
-                  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                  unzip awscliv2.zip
-                  ./aws/install
-                  export PATH=$PATH:/usr/local/bin
-                  ;;
-                minio)
-                  wget https://dl.min.io/client/mc/release/linux-amd64/mc
-                  chmod +x mc
-                  mv mc /usr/local/bin/
-                  ;;
-                azure)
-                  curl -sL https://aka.ms/InstallAzureCLIDeb | bash
-                  python3 -m pip install azure-storage-blob
-                  ;;
-                *)
-                  echo "Unsupported output provider: ${OUTPUT_PROVIDER}"
-                  exit 1
-                  ;;
-              esac
+              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              unzip awscliv2.zip
+              ./aws/install
+              export PATH=$PATH:/usr/local/bin
+              wget https://dl.min.io/client/mc/release/linux-amd64/mc
+              chmod +x mc
+              mv mc /usr/local/bin/
+              export PATH=$PATH:/usr/local/bin
+              which mc || { echo "mc not found after install"; exit 1; }
+              curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+              python3 -m pip install azure-storage-blob
               TIMESTAMP=$(date +%Y%m%d-%H%M%S)
               BACKUP_FILE="/tmp/backup-${TIMESTAMP}"
               send_notification() {
@@ -275,11 +263,11 @@ spec:
               }
               # Main execution
               ensure_backup_folder
+              delete_old_backups
               if perform_backup; then
                 send_notification "success" "Database backup for ${DB_NAME} completed successfully at $(date)"
                 if upload_backup; then
                   send_notification "success" "Backup for ${DB_NAME} uploaded to ${OUTPUT_PROVIDER} successfully at $(date)"
-                  delete_old_backups
                 else
                   send_notification "failure" "Failed to upload backup for ${DB_NAME} to ${OUTPUT_PROVIDER} at $(date)"
                   exit 1
