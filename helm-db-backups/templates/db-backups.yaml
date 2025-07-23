@@ -58,48 +58,32 @@ spec:
             - /bin/bash
             - -c
             - |
+              #!/bin/bash
               set -e
+              # Install required tools
               export DEBIAN_FRONTEND=noninteractive
               apt-get update && apt-get install -y \
-                curl ca-certificates gnupg2 lsb-release unzip wget jq python3 python3-pip tzdata
-
-              # Install only the required database client
-              case "${DB_TYPE}" in
-                psql)
-                  wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
-                  sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-                  apt-get update
-                  apt-get install -y postgresql-client-16
-                  ;;
-                mysql)
-                  apt-get install -y mysql-client
-                  ;;
-                mongo)
-                  wget https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
-                  apt-get install -y ./mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
-                  ;;
-                *)
-                  echo "Unsupported DB_TYPE: ${DB_TYPE}"
-                  exit 1
-                  ;;
-              esac
-              # Install only the required cloud CLI/tool for the output provider
+                curl ca-certificates gnupg2 lsb-release unzip \
+                wget jq python3 python3-pip tzdata
+              wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+              sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+              apt-get update
+              apt-get install -y postgresql-client-16
+              wget https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
+              apt-get install -y ./mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
               case "${OUTPUT_PROVIDER}" in
                 aws)
-                  # Install AWS CLI v2 only if needed
                   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
                   unzip awscliv2.zip
                   ./aws/install
                   export PATH=$PATH:/usr/local/bin
                   ;;
                 minio)
-                  # Install MinIO client (mc) only if needed
                   wget https://dl.min.io/client/mc/release/linux-amd64/mc
                   chmod +x mc
                   mv mc /usr/local/bin/
                   ;;
                 azure)
-                  # Install Azure CLI only if needed
                   curl -sL https://aka.ms/InstallAzureCLIDeb | bash
                   python3 -m pip install azure-storage-blob
                   ;;
@@ -290,11 +274,11 @@ spec:
                 esac
               }
               # Main execution
+              ensure_backup_folder
               if perform_backup; then
                 send_notification "success" "Database backup for ${DB_NAME} completed successfully at $(date)"
                 if upload_backup; then
                   send_notification "success" "Backup for ${DB_NAME} uploaded to ${OUTPUT_PROVIDER} successfully at $(date)"
-                  ensure_backup_folder
                   delete_old_backups
                 else
                   send_notification "failure" "Failed to upload backup for ${DB_NAME} to ${OUTPUT_PROVIDER} at $(date)"
