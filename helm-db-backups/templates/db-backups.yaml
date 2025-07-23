@@ -60,35 +60,27 @@ spec:
             - |
               #!/bin/bash
               set -e
-              # Install required tools
-              export DEBIAN_FRONTEND=noninteractive
+              # Install common tools
               apt-get update && apt-get install -y \
-                curl ca-certificates gnupg2 lsb-release unzip \
-                wget jq python3 python3-pip tzdata
-              wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
-              sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-              apt-get update
-              apt-get install -y postgresql-client-16
-              wget https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
-              apt-get install -y ./mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
-              case "${OUTPUT_PROVIDER}" in
-                aws)
-                  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                  unzip awscliv2.zip
-                  ./aws/install
-                  export PATH=$PATH:/usr/local/bin
+                curl ca-certificates gnupg2 lsb-release unzip wget jq python3 python3-pip tzdata
+
+              # Install only the required database client
+              case "${DB_TYPE}" in
+                psql)
+                  wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+                  sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+                  apt-get update
+                  apt-get install -y postgresql-client-16
                   ;;
-                minio)
-                  wget https://dl.min.io/client/mc/release/linux-amd64/mc
-                  chmod +x mc
-                  mv mc /usr/local/bin/
+                mysql)
+                  apt-get install -y mysql-client
                   ;;
-                azure)
-                  curl -sL https://aka.ms/InstallAzureCLIDeb | bash
-                  python3 -m pip install azure-storage-blob
+                mongo)
+                  wget https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
+                  apt-get install -y ./mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
                   ;;
                 *)
-                  echo "Unsupported output provider: ${OUTPUT_PROVIDER}"
+                  echo "Unsupported DB_TYPE: ${DB_TYPE}"
                   exit 1
                   ;;
               esac
