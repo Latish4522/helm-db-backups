@@ -97,13 +97,11 @@ spec:
                   export PATH=$PATH:/usr/local/bin
                   ;;
                 minio)
-                  echo "Downloading MinIO client (mc)..."
-                  wget -O /tmp/mc https://dl.min.io/client/mc/release/linux-amd64/mc || { echo "wget failed"; exit 1; }
-                  chmod +x /tmp/mc || { echo "chmod failed"; exit 1; }
-                  mv /tmp/mc /usr/local/bin/mc || { echo "mv failed"; exit 1; }
+                  wget https://dl.min.io/client/mc/release/linux-amd64/mc
+                  chmod +x mc
+                  mv mc /usr/local/bin/
                   export PATH=$PATH:/usr/local/bin
                   which mc || { echo "mc not found after install"; exit 1; }
-                  mc --version || { echo "mc not working"; exit 1; }
                   ;;
                 azure)
                   curl -sL https://aka.ms/InstallAzureCLIDeb | bash
