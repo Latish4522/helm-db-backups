@@ -62,6 +62,27 @@ spec:
               export DEBIAN_FRONTEND=noninteractive
               apt-get update && apt-get install -y \
                 curl ca-certificates gnupg2 lsb-release unzip wget jq python3 python3-pip tzdata
+
+              # Install only the required database client
+              case "${DB_TYPE}" in
+                psql)
+                  wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+                  sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+                  apt-get update
+                  apt-get install -y postgresql-client-16
+                  ;;
+                mysql)
+                  apt-get install -y mysql-client
+                  ;;
+                mongo)
+                  wget https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
+                  apt-get install -y ./mongodb-database-tools-ubuntu2204-x86_64-100.7.3.deb
+                  ;;
+                *)
+                  echo "Unsupported DB_TYPE: ${DB_TYPE}"
+                  exit 1
+                  ;;
+              esac
               # Install only the required cloud CLI/tool for the output provider
               case "${OUTPUT_PROVIDER}" in
                 aws)
