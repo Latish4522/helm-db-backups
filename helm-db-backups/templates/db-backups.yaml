@@ -47,6 +47,7 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      ttlSecondsAfterFinished: 60
       template:
         spec:
           restartPolicy: OnFailure
@@ -162,7 +163,7 @@ spec:
                       BACKUP_EXT="backup"
                     fi
                     mc alias set myminio ${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
-                    mc cp "${BACKUP_FILE}.${BACKUP_EXT}" myminio/${MINIO_BUCKET}/${S3_PATH}${DB_NAME}-${TIMESTAMP}.${BACKUP_EXT}
+                    mc cp "${BACKUP_FILE}.${BACKUP_EXT}" myminio/${MINIO_BUCKET}/${S3_PATH}${DB_TYPE}-${TIMESTAMP}.${BACKUP_EXT}
                     ;;
                   azure)
                     export AZURE_STORAGE_ACCOUNT
